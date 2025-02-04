@@ -1,0 +1,4 @@
+Attempt,Dataset,PCC,RMSE,MAE,Model_Path,Original_Val_PCC,Original_Val_MAE,Original_Val_MSE
+1,s250,0.930251886840324,0.7003718,0.44457105,CoM_Bidirectional_Sorted_S2648_struct_cognn_4layers_attempt_1.pth,0.9612893981887822,0.29920867,0.23385562
+2,s250,0.9026539810101895,0.8166413,0.44360682,CoM_Bidirectional_Sorted_S2648_struct_cognn_4layers_attempt_2.pth,0.9816284094042386,0.19821763,0.12394723
+3,s250,0.9287552741186573,0.72995913,0.43633795,CoM_Bidirectional_Sorted_S2648_struct_cognn_4layers_attempt_3.pth,0.9947406384943314,0.15228866,0.050496165
