@@ -1,7 +1,7 @@
 # CoMDDG
 # Data preparation:
 
-All datasets utilized in this study are accessible in the 'Data' folder. All necessary information regarding PDB IDs, DDG, and mutation sites is provided. Wild-type structures can be directly downloaded from the Protein Data Bank. However, for mutant structures, the procedure outlined in the manuscript should be followed. The FoldX algorithm can be employed to generate and relax mutant structures, utilizing their corresponding wild-type structures as templates
+The datasets utilized in this study are accessible in the 'Dataseset' folder. All necessary information regarding PDB IDs, DDG, and mutation sites is provided. Wild-type structures can be directly downloaded from the Protein Data Bank. However, for mutant structures, the procedure outlined in the manuscript should be followed. The FoldX algorithm can be employed to generate and relax mutant structures, utilizing their corresponding wild-type structures as templates
 
 Here is a simplified procedure for utilizing FoldX for generation and relaxation of mutant structures:
 
@@ -46,6 +46,6 @@ After generation of graphs (graph for whole chain), to train and test the model 
 
 please note that in newest version, we build graph for whole chain and we updated codes. Then, in the final step, you can extract 11 residue graphs for mutation sites (SubGraph_extraction.py code). 
 
-If you have any questions please contact me: mohammad.madani@uconn.edu
+If you have any questions please contact me: chenrui3074@stu.ouc.edu.cn
 
 # comDDG
