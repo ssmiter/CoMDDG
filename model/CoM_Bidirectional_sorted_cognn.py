@@ -1,6 +1,5 @@
 """
-Enhanced CoM Bidirectional with CoGNN integration
-PCC: S250:0.91
+Enhanced CoM Bidirectional with CoGNN integration and hybrid sorting/non-sorting adaptive fusion
 """
 import torch
 import torch.nn as nn
@@ -11,9 +10,12 @@ from mamba_ssm import Mamba
 from cognn.helpers.classes import GumbelArgs, ActionNetArgs, ActivationType
 from cognn.helpers.model import ModelType
 from cognn.models.cognn_layer import CoGNNLayer
-# from model.CoM_Bidirectional_sorted_2 import EnhancedGMBLayer
 
-class EnhancedGMBLayer(nn.Module):
+
+class UnsortedMambaLayer(nn.Module):
+    """
+    Non-sorting Mamba layer from v1
+    """
     def __init__(self, d_model, d_state=16, d_conv=4, expand=2):
         super().__init__()
         self.forward_mamba = Mamba(
@@ -35,17 +37,94 @@ class EnhancedGMBLayer(nn.Module):
             nn.Sigmoid()
         )
 
-        self.temp = nn.Parameter(torch.tensor(1.0))
+    def forward(self, x, batch):
+        # Convert to dense batch directly without sorting
+        h_dense, mask = to_dense_batch(x, batch)
+
+        # Process through forward Mamba
+        forward_out = self.forward_mamba(h_dense)
+
+        # Process through backward Mamba
+        x_reverse = torch.flip(h_dense, dims=[1])
+        backward_out = self.backward_mamba(x_reverse)
+        backward_out = torch.flip(backward_out, dims=[1])
+
+        # Combine outputs with learned gate
+        combined = torch.cat([forward_out, backward_out], dim=-1)
+        gate = self.gate(combined)
+        y_prime = gate * forward_out + (1 - gate) * backward_out
+
+        # Apply mask
+        y_prime = y_prime * mask.unsqueeze(-1)
+
+        # Flatten to match the input format
+        out = y_prime[mask]
+
+        return out
+
+
+class DegreeSortedMambaLayer(nn.Module):
+    """
+    Degree-sorting Mamba layer from v2
+    """
+    def __init__(self, d_model, d_state=16, d_conv=4, expand=2):
+        super().__init__()
+        self.forward_mamba = Mamba(
+            d_model=d_model,
+            d_state=d_state,
+            d_conv=d_conv,
+            expand=expand
+        )
+
+        self.backward_mamba = Mamba(
+            d_model=d_model,
+            d_state=d_state,
+            d_conv=d_conv,
+            expand=expand
+        )
+
+        self.gate = nn.Sequential(
+            nn.Linear(d_model * 2, d_model),
+            nn.Sigmoid()
+        )
+
+        self.temp = nn.Parameter(torch.tensor(0.5))
         self.min_temp = 0.1
 
-    def forward(self, x, edge_index, edge_attr, batch):
-        # Your existing GMB implementation
+    def forward(self, x, edge_index, batch):
+        # Get node degrees
         deg = degree(edge_index[0], x.size(0), dtype=torch.float)
-        deg_logits = deg.unsqueeze(-1)
-        deg_soft = F.gumbel_softmax(deg_logits, tau=torch.clamp(self.temp, min=self.min_temp), hard=False)
-        h_ind_perm = lexsort([deg_soft.squeeze(-1), batch])
+        num_graphs = batch.max().item() + 1
+
+        # Initialize tensor for softened degrees
+        deg_gumbel = torch.zeros_like(deg)
+
+        # Apply gumbel_softmax separately for each graph
+        for g in range(num_graphs):
+            # Find nodes in the current graph
+            graph_mask = (batch == g)
+            graph_indices = torch.where(graph_mask)[0]
+
+            # Get degrees for the current graph
+            graph_deg = deg[graph_indices]
+
+            # Apply gumbel_softmax to current graph's degrees
+            tau = torch.clamp(self.temp, min=self.min_temp)
+            if self.training:  # Use Gumbel-Softmax with randomness during training
+                graph_deg_gumbel = F.gumbel_softmax(graph_deg.unsqueeze(-1), tau=tau, hard=False, dim=0).squeeze(-1)
+            else:  # Use deterministic sorting during evaluation
+                graph_deg_gumbel = graph_deg
+
+            # Store results back
+            deg_gumbel[graph_indices] = graph_deg_gumbel
+
+        # Sort using lexsort: first by batch, then by gumbel-softened degrees
+        h_ind_perm = lexsort([deg_gumbel, batch])
+
+        # Convert nodes to dense batch
         h_dense, mask = to_dense_batch(x[h_ind_perm], batch[h_ind_perm])
 
+        # Mamba processing
         forward_out = self.forward_mamba(h_dense)
         x_reverse = torch.flip(h_dense, dims=[1])
         backward_out = self.backward_mamba(x_reverse)
@@ -55,7 +134,10 @@ class EnhancedGMBLayer(nn.Module):
         gate = self.gate(combined)
         y_prime = gate * forward_out + (1 - gate) * backward_out
 
+        # Apply mask
         y_prime = y_prime * mask.unsqueeze(-1)
+
+        # Restore original order
         h_ind_perm_reverse = torch.argsort(h_ind_perm)
         out = y_prime[mask][h_ind_perm_reverse]
 
@@ -70,58 +152,23 @@ def gin_mlp_func(in_channels, out_channels, bias):
     )
 
 
-class IntegratedCoGNNLayer(nn.Module):
-    def __init__(self, in_channels, out_channels):
-        super().__init__()
-
-        # Initialize GumbelArgs with all required parameters
-        gumbel_args = GumbelArgs(
-            learn_temp=True,
-            temp_model_type=ModelType.GCN,  # Using GCN as temp model
-            tau0=0.1,
-            temp=1.0,
-            gin_mlp_func=gin_mlp_func
-        )
-
-        # Initialize ActionNetArgs with all required parameters
-        action_args = ActionNetArgs(
-            model_type=ModelType.GCN,
-            num_layers=2,
-            hidden_dim=out_channels,
-            dropout=0.1,
-            act_type=ActivationType.RELU,
-            env_dim=in_channels,
-            gin_mlp_func=gin_mlp_func
-        )
-
-        # CoGNN layer from cognn package
-        self.cognn = CoGNNLayer(
-            in_channels=in_channels,
-            out_channels=out_channels,
-            gumbel_args=gumbel_args,
-            action_args=action_args
-        )
-
-        # Additional processing layers
-        self.post_process = nn.Sequential(
-            nn.LayerNorm(out_channels),
-            nn.Dropout(0.1)
-        )
-
-        # Define gin_mlp_func
-
-    def forward(self, x, edge_index, edge_attr):
-        out = self.cognn(x, edge_index, edge_attr)
-        return self.post_process(out)
-
-
-class EnhancedGMB(nn.Module):
+class HybridEnhancedGMB(nn.Module):
+    """
+    Combined module with both sorted and unsorted pathways
+    """
     def __init__(self, d_model, feature_dim, d_state=16, d_conv=4, expand=2):
         super().__init__()
-        self.edge_feature_dim = 16
 
-        # GMB layer
-        self.gmb = EnhancedGMBLayer(
+        # Unsorted Mamba pathway
+        self.unsorted_mamba = UnsortedMambaLayer(
+            d_model=d_model,
+            d_state=d_state,
+            d_conv=d_conv,
+            expand=expand
+        )
+
+        # Degree-sorted Mamba pathway
+        self.sorted_mamba = DegreeSortedMambaLayer(
             d_model=d_model,
             d_state=d_state,
             d_conv=d_conv,
@@ -156,7 +203,7 @@ class EnhancedGMB(nn.Module):
             )
         )
 
-        # Initialize CoGNN layer with proper arguments
+        # Initialize CoGNN layer
         self.cognn = CoGNNLayer(
             in_channels=d_model,
             out_channels=d_model,
@@ -172,14 +219,23 @@ class EnhancedGMB(nn.Module):
             nn.Sigmoid()
         )
 
-        self.fusion_gate = nn.Sequential(
+        # Fusion gate for unsorted and sorted outputs
+        self.pathway_fusion_gate = nn.Sequential(
             nn.Linear(d_model * 2, 2),
             nn.Softmax(dim=-1)
         )
 
+        # Fusion gate for mamba and cognn outputs
+        self.mamba_cognn_fusion_gate = nn.Sequential(
+            nn.Linear(d_model * 2, 2),
+            nn.Softmax(dim=-1)
+        )
+
+        # Normalization layers
         self.feature_norm = nn.LayerNorm(d_model)
         self.output_norm = nn.LayerNorm(d_model)
 
+        # Feature enhancement
         self.feature_enhance = nn.Sequential(
             nn.Linear(d_model, d_model),
             nn.ReLU(),
@@ -188,26 +244,37 @@ class EnhancedGMB(nn.Module):
         )
 
     def forward(self, x, edge_index, edge_attr, batch):
-        # Process through GMB path
-        gmb_out = self.gmb(x, edge_index, edge_attr, batch)
-        gmb_out = self.feature_norm(gmb_out)
+        # Process through unsorted Mamba pathway
+        unsorted_out = self.unsorted_mamba(x, batch)
+        unsorted_out = self.feature_norm(unsorted_out)
 
-        # Process through CoGNN path with edge features
+        # Process through sorted Mamba pathway
+        sorted_out = self.sorted_mamba(x, edge_index, batch)
+        sorted_out = self.feature_norm(sorted_out)
+
+        # Fuse the two Mamba pathways
+        mamba_combined = torch.cat([unsorted_out, sorted_out], dim=-1)
+        mamba_fusion_weights = self.pathway_fusion_gate(mamba_combined)
+
+        mamba_out = mamba_fusion_weights[:, 0].unsqueeze(-1) * unsorted_out + \
+                    mamba_fusion_weights[:, 1].unsqueeze(-1) * sorted_out
+
+        # Process through CoGNN pathway
         cognn_out = self.cognn(x, edge_index, edge_attr)
         cognn_out = self.feature_norm(cognn_out)
 
         # Apply channel attention
-        gmb_attention = self.channel_attention(gmb_out)
+        mamba_attention = self.channel_attention(mamba_out)
         cognn_attention = self.channel_attention(cognn_out)
 
-        gmb_out = gmb_out * gmb_attention
+        mamba_out = mamba_out * mamba_attention
         cognn_out = cognn_out * cognn_attention
 
-        # Feature fusion
-        combined = torch.cat([gmb_out, cognn_out], dim=-1)
-        fusion_weights = self.fusion_gate(combined)
+        # Fuse Mamba and CoGNN outputs
+        combined = torch.cat([mamba_out, cognn_out], dim=-1)
+        fusion_weights = self.mamba_cognn_fusion_gate(combined)
 
-        out = fusion_weights[:, 0].unsqueeze(-1) * gmb_out + \
+        out = fusion_weights[:, 0].unsqueeze(-1) * mamba_out + \
               fusion_weights[:, 1].unsqueeze(-1) * cognn_out
 
         # Feature enhancement and residual connection
@@ -216,20 +283,23 @@ class EnhancedGMB(nn.Module):
 
         return out
 
-# Rest of your model remains the same
-class CoGNN_GraphMambaSorted(nn.Module):
+
+class HybridCoGNN_GraphMamba(nn.Module):
+    """
+    Main model integrating hybrid components
+    """
     def __init__(self, in_channels, hidden_channels, out_channels, gmb_args, num_layers):
         super().__init__()
         self.input_norm = nn.LayerNorm(in_channels)
         self.input_proj = nn.Linear(in_channels, hidden_channels)
-        
+
         self.blocks = nn.ModuleList([
-            EnhancedGMB(
+            HybridEnhancedGMB(
                 feature_dim=in_channels if i == 0 else hidden_channels,
                 **gmb_args
             ) for i in range(num_layers)
         ])
-        
+
         self.output_layer = nn.Sequential(
             nn.Linear(hidden_channels, hidden_channels * 2),
             nn.ReLU(),
@@ -240,7 +310,6 @@ class CoGNN_GraphMambaSorted(nn.Module):
             nn.Linear(hidden_channels, out_channels)
         )
 
-    # process_subgraph and forward methods remain the same
     def process_subgraph(self, x, edge_index, edge_attr, batch):
         x = self.input_norm(x)
         x = self.input_proj(x)
