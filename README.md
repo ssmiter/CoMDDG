@@ -105,7 +105,7 @@ This script extracts structural features including:
 The CoMamba architecture incorporates:
 
 1. **Degree-Sorted Bidirectional Mamba**: Processes protein structure as a sequence sorted by node degree
-2. **Cognitive Graph Neural Network**: Learning optimal actions for message passing
+2. **Cooperative Graph Neural Network**: Learning optimal actions for message passing
 3. **Feature Fusion**: Combines representations from both models
 
 ## Model Training
