@@ -1,5 +1,5 @@
 """
-Enhanced CoM Bidirectional with CoGNN integration and hybrid sorting/non-sorting adaptive fusion1
+Enhanced CoM Bidirectional with CoGNN integration and hybrid sorting/non-sorting adaptive fusion
 """
 import torch
 import torch.nn as nn
