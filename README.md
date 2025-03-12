@@ -1,51 +1,161 @@
-# CoMDDG
-# Data preparation:
+# CoM-DDG
 
-The datasets utilized in this study are accessible in the 'Dataseset' folder. All necessary information regarding PDB IDs, DDG, and mutation sites is provided. Wild-type structures can be directly downloaded from the Protein Data Bank. However, for mutant structures, the procedure outlined in the manuscript should be followed. The FoldX algorithm can be employed to generate and relax mutant structures, utilizing their corresponding wild-type structures as templates
+A novel approach for predicting protein stability changes upon mutation (ΔΔG) by combining State Space Models (Mamba) with Cooperative Graph Neural Networks (CoGNN).
 
-Here is a simplified procedure for utilizing FoldX for generation and relaxation of mutant structures:
+## Data Preparation
 
-https://github.com/shahpr/contingency_entrenchment
-all generated pdbs are provided in the zenodo link
-# Feature extractions from PDBs:
+The datasets utilized in this study are accessible in the 'Dataset' folder. All necessary information regarding PDB IDs, DDG values, and mutation sites is provided.
 
-# Deriving Atomic Distances and Orientations from PDBs:
+### Acquiring Protein Structures
 
-For structure-based model, you need to extract distance between Ca atoms and all angles 
-For sequence-based model, you need to use predict disnatcne and contact map. 
+1. **Wild-type structures**: Download directly from the RCSB Protein Data Bank.
 
-# Extraction of Physiochemical Properties:
+   ```bash
+   # Example using wget
+   wget https://files.rcsb.org/download/1BPI.pdb
+   ```
 
-you need to use DSSP to extract SS and SASA for structures
-you need to use BLAST+ or hhblits for MSA and pssm calculations.
+2. **Mutant structures**: Generate using FoldX from wild-type structures following this procedure:
 
-Extract physiochemical properties either from sequences or PDB files are provided in the codes.
+   a. Repair the wild-type PDB:
 
-# MSA and Coevolutionary Features Extraction for sequences:
+   ```
+   # Create config_RE.cfg file
+   command=RepairPDB
+   pdb=1BPI.pdb
+   ```
 
-Employ the following software to extract MSA (Multiple Sequence Alignment) and coevolutionary features.
+   b. Generate mutant:
 
-https://github.com/realbigws/TGT_Package
+   ```
+   # Create individual_list.txt file (e.g., for mutation A4G in chain A)
+   AA4G;
+   
+   # Create config_BM.cfg file
+   command=BuildModel
+   pdb=1BPI_Repair.pdb
+   mutant-file=individual_list.txt
+   numberOfRuns=3
+   output-file=mutant_output.pdb
+   ```
 
-For properties prediction such as SS and RSA, PSSM, PSFM, and ... use:
+   c. Run FoldX:
 
-https://github.com/realbigws/Predict_Property
-# Contact map prediction for edges generation in sequence-based models:
-In a structure-based model, pairwise distances between beta carbons serve as edges. However, for sequence-based models, the prediction of contact maps (pairwise distances) is necessary for edge formation. To accomplish contact map prediction, our recent model, CGAN-Cmap, can be employed. Find the model here:
+   ```bash
+   foldx -f config_RE.cfg
+   foldx -f config_BM.cfg
+   ```
 
-https://github.com/mahan-fcb/CGAN-Cmap-A-protein-contact-map-predictor
+## Feature Extraction Pipeline
 
-# Final feature generation
-After completing the aforementioned steps, the next phase involves combining all extracted features using the graph_gen.py, feature_gen.py, and combining_features_to_graph.py
+### 1. Sequence Features Extraction
 
+Sequence features are processed in multiple steps:
 
+1. **Generate FASTA sequences from PDB files**
 
-# Model traning: 
+2. **Generate PSSM matrices using BLAST+**:
 
-After generation of graphs (graph for whole chain), to train and test the model please use the train.py and prediction.py
+   ```bash
+   # Create a batch script to run PSI-BLAST
+   psiblast -db swissprot -query protein.fasta -num_iterations 3 -out_ascii_pssm protein.pssm
+   ```
 
-please note that in newest version, we build graph for whole chain and we updated codes. Then, in the final step, you can extract 11 residue graphs for mutation sites (SubGraph_extraction.py code). 
+3. **Parse PSSM files and create a pickle file**:
 
-If you have any questions please contact me: chenrui3074@stu.ouc.edu.cn
+   ```bash
+   # Process all PSSM files in the directory
+   python pssm.py
+   ```
 
-# comDDG
+4. **Calculate conservation scores from PSSM data**:
+
+   ```bash
+   # Generate conservation scores from PSSM data
+   python conservation.py
+   ```
+
+5. **Generate sequence-based graphs**:
+
+   ```bash
+   # Process PDB files into graph representations with sequence features
+   python enhanced_graph_gen_v2.py
+   ```
+
+At this point, you have sequence-based features and can start training the model. For additional feature enhancement, proceed to the structure-based feature extraction.
+
+### 2. Structure Features Extraction (Optional Enhancement)
+
+Extract additional structural features to enhance model performance:
+
+```bash
+# Enhanced structure feature extraction
+python enhanced_graph_gen_structure_simplified.py
+```
+
+This script extracts structural features including:
+
+- Secondary structure elements
+- Solvent accessible surface area
+- Residue depth
+- Backbone angles
+
+## Model Architecture
+
+The CoMamba architecture incorporates:
+
+1. **Degree-Sorted Bidirectional Mamba**: Processes protein structure as a sequence sorted by node degree
+2. **Cognitive Graph Neural Network**: Learning optimal actions for message passing
+3. **Feature Fusion**: Combines representations from both models
+
+## Model Training
+
+Training automatically extracts k-hop subgraphs centered on mutation sites from the full protein graphs:
+
+```bash
+# Train the CoMamba model
+python train_ablation_model.py
+```
+
+Key configurations can be adjusted in `config.py`:
+
+- `NUM_HOPS`: Number of hops in k-hop subgraphs (3-4 recommended)
+- `BATCH_SIZE`: Batch size for training (128, 256 recommended)
+- `LEARNING_RATE`: Learning rate for optimizer (0.0012 recommended)
+- `NUM_EPOCHS`: Number of training epochs (200 recommended)
+- `USE_SUBGRAPHS`: Toggle k-hop subgraph extraction (True by default)
+
+The k-hop subgraph extraction is integrated into the data loading pipeline in `data_loader_add_mut_v2.py` and occurs automatically during training.
+
+## Prediction
+
+To evaluate the model on test datasets:
+
+```bash
+# Run predictions
+python prediction_ablation.py
+```
+
+This script:
+
+1. Loads the trained model
+2. Processes test datasets (automatically extracting k-hop subgraphs)
+3. Evaluates using PCC, RMSE, and MAE metrics
+
+## Ablation Studies
+
+The project includes several model variants for ablation studies:
+
+- `LocalMambaOnly`: Only uses the Mamba component
+- `LocalCoGNNOnly`: Only uses the CoGNN component
+- `LocalCoGNN_GraphMambaSortedNoFusion`: No feature fusion between models
+- `LocalCoGNN_GraphMambaSortedForward`: Only forward direction (no bidirectional)
+
+## Contact
+
+If you have any questions, please contact chenrui3074@stu.ouc.edu.cn
+
+## Acknowledgments
+
+- Mamba: https://github.com/state-spaces/mamba
+- CoGNN: https://github.com/benfinkelshtein/CoGNN
