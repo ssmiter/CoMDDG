@@ -142,14 +142,6 @@ This script:
 2. Processes test datasets (automatically extracting k-hop subgraphs)
 3. Evaluates using PCC, RMSE, and MAE metrics
 
-## Ablation Studies
-
-The project includes several model variants for ablation studies:
-
-- `LocalMambaOnly`: Only uses the Mamba component
-- `LocalCoGNNOnly`: Only uses the CoGNN component
-- `LocalCoGNN_GraphMambaSortedNoFusion`: No feature fusion between models
-- `LocalCoGNN_GraphMambaSortedForward`: Only forward direction (no bidirectional)
 
 ## Contact
 
