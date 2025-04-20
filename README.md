@@ -1,3 +1,9 @@
+<h1 align="center">
+  <img src="./Framework.png" width=768/>
+</h1>
+
+
+
 # CoM-DDG
 
 A novel approach for predicting protein stability changes upon mutation (ΔΔG) by combining State Space Models (Mamba) with Cooperative Graph Neural Networks (CoGNN).
